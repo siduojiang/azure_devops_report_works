@@ -6,6 +6,7 @@ from msrest.authentication import BasicAuthentication
 from azure.devops.v6_0.work_item_tracking.models import Wiql
 
 def parse_args():
+    '''Defines cmdline arguments'''
     parser = argparse.ArgumentParser()
     parser.add_argument('--access-token', help='Azure Dev Ops access token')
     parser.add_argument('--org-name', help='Azure Dev Ops organization')
@@ -47,6 +48,8 @@ class ReportProjectWorks(object):
                               WHERE ([System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward')
                               AND Target.[System.TeamProject] = '%s'
                               """ %str(self.project_name)
+
+        #If tag is supplied, filter based on the presence of the tag
         if self.tag is not None:
             work_items_query += "AND [System.Tags] CONTAINS '%s'" %str(self.tag)
             work_items_link_query += """
@@ -54,28 +57,32 @@ class ReportProjectWorks(object):
                                      ORDER BY [System.Id]
                                      MODE (Recursive, ReturnMatchingChildren)
                                      """ %str(self.tag)
+
+        #Otherwise, generate an ordering based on System.Id
         else:
             work_items_link_query += """
                                      ORDER BY [System.Id]
                                      MODE (Recursive, ReturnMatchingChildren)
                                      """
 
-        #submit the queries
+        #submit the queries, and extract the work_items and their relations
         wiql_works = wit_client.query_by_wiql(Wiql(query=work_items_query)).work_items
         wiql_links = wit_client.query_by_wiql(Wiql(query=work_items_link_query)).work_item_relations
 
         if wiql_works:
             # WIQL query gives a WorkItemReference with ID only
-            # => we get the corresponding WorkItem from id
+            # Get the corresponding WorkItem from id
             work_items = [wit_client.get_work_item(int(res.id)) for res in wiql_works]
 
-            #Generate a mapping between work id and the output field
+            #Generate a mapping between work id and the output string to be printed
+            #This generates the lookup table when printing the messages
             works = {}
             for work_item in work_items:
                 work_item = work_item.as_dict()
                 item_id = work_item['id']
                 works[item_id] = self.get_fields_output(work_item)
 
+            #return the lookup table of strings, and the raw links table
             return works, wiql_links
         else:
             return [], []
@@ -85,18 +92,24 @@ class ReportProjectWorks(object):
         """Parses the returned hierarchy and hash target ids to source pairs"""
         #Gather the hierarchy link structure
         #Key is the target id (parents), value is the source id (children of parent)
-        head_nodes = []
         hierarchy = {}
+
+        #maintain a list of head_nodes
+        #These are the top most levels, and we will need to iterate through each
+        #in order to generate the full report
+        head_nodes = []
+
         for result in wiql_links:
             result = result.as_dict()
 
             target_id = result['target']['id']
 
-            #Head node -- 'target' is the only
+            #Head node -- when 'source' is not present, it is a head node
             if 'source' not in result.keys():
                 hierarchy[target_id] = []
                 head_nodes.append(target_id)
-            #append this to the target
+
+            #append this target to the source
             else:
                 source_id = result['source']['id']
                 hierarchy[source_id].append(target_id)
@@ -132,6 +145,7 @@ class ReportProjectWorks(object):
             for tail_node in links[node]:
                 recursive_search(tail_node, indents + 1)
 
+        #Print from every head node
         for node in head_nodes:
             recursive_search(node)
 
